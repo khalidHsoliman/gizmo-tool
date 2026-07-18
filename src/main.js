@@ -1,7 +1,19 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+async function loadCore() {
+  try {
+    const createModule = (await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}core.js`)).default;
+    return await createModule();
+  } catch (err) {
+    console.error('[gizmo] Could not load core.js — did you run the em++ compile?', err);
+    return null;
+  }
+}
+
 async function main() {
+  const core = await loadCore();
+
   // --- scene ---
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x14141a);
@@ -34,8 +46,11 @@ async function main() {
     renderer.setSize(innerWidth, innerHeight);
   });
 
-  // --- render loop ---
+  // --- render loop: C++ computes the spin angle each frame ---
+  const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
+    const t = clock.getElapsedTime();
+    if (core) cube.rotation.y = core.spin(t);
     controls.update();
     renderer.render(scene, camera);
   });
