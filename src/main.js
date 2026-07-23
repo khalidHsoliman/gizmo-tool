@@ -103,12 +103,8 @@ async function main() {
 
   const GIZMOS = { translate, rotate, scale };
   scene.add(translate.group, rotate.group, scale.group);
-  const syncGizmos = () => {
-    for (const g of Object.values(GIZMOS)) g.group.position.copy(cube.position);
-  };
-  syncGizmos();
 
-  // --- mode toggle (W = move, E = rotate, R = scale) ---
+  // --- mode + space state ---
   const hint = document.createElement('div');
   hint.style.cssText =
     'position:fixed;left:12px;bottom:12px;font:13px/1.4 system-ui,sans-serif;' +
@@ -116,25 +112,31 @@ async function main() {
     'user-select:none;pointer-events:none';
   document.body.appendChild(hint);
 
-  const KEYS = { w: 'translate', e: 'rotate', r: 'scale' };
+  const MODE_KEYS = { w: 'translate', e: 'rotate', r: 'scale' };
   let mode = 'translate';
-  const applyMode = () => {
+  let space = 'world'; // 'world' = axis-aligned; 'local' = follows the cube
+
+  const refreshUI = () => {
     for (const [name, g] of Object.entries(GIZMOS)) g.group.visible = name === mode;
-    hint.textContent = `[W] Move   [E] Rotate   [R] Scale   —   ${mode.toUpperCase()}`;
+    hint.textContent =
+      `[W] Move   [E] Rotate   [R] Scale   [Q] Space: ${space.toUpperCase()}   —   ${mode.toUpperCase()}`;
   };
-  applyMode();
+  refreshUI();
 
   addEventListener('keydown', (e) => {
-    const next = KEYS[e.key.toLowerCase()];
-    if (next) { mode = next; applyMode(); }
+    const k = e.key.toLowerCase();
+    if (MODE_KEYS[k]) { mode = MODE_KEYS[k]; refreshUI(); }
+    else if (k === 'q') { space = space === 'world' ? 'local' : 'world'; refreshUI(); }
   });
 
   // --- interaction ---
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
+  const IDENTITY_Q = new THREE.Quaternion();
   const startPos = new THREE.Vector3();
   const startQuat = new THREE.Quaternion();
   const startScale = new THREE.Vector3();
+  const dragAxis = new THREE.Vector3(); // grabbed axis, in world space, fixed for the drag
   let active = null;   // the grabbed handle's { dir, mat, color }, or null
   let startT = 0;      // translate/scale: axis position at drag start
   let prevAngle = 0;   // rotate: last frame's angle (for wrap-safe deltas)
@@ -174,12 +176,19 @@ async function main() {
     active = h;
     controls.enabled = false;
     startPos.copy(cube.position); // axis origin stays fixed for the whole drag
+
+    // The C++ math is world-space. In local mode, rotate the grabbed axis by the
+    // cube's current orientation to get its world direction; freeze it for the drag.
+    dragAxis.copy(active.dir);
+    if (space === 'local') dragAxis.applyQuaternion(cube.quaternion);
+    dragAxis.normalize();
+
     if (mode === 'rotate') {
       startQuat.copy(cube.quaternion);
-      prevAngle = axisAngle(active.dir, startPos);
+      prevAngle = axisAngle(dragAxis, startPos);
       accumAngle = 0;
     } else {
-      startT = axisT(active.dir, startPos); // translate & scale both need this
+      startT = axisT(dragAxis, startPos); // translate & scale both need this
       if (mode === 'scale') startScale.copy(cube.scale);
     }
     active.mat.color.set(HOT_COLOR);
@@ -189,11 +198,10 @@ async function main() {
     setPointer(e);
     if (active) {
       if (mode === 'translate') {
-        const delta = axisT(active.dir, startPos) - startT;
-        cube.position.copy(startPos).addScaledVector(active.dir, delta);
-        syncGizmos();
+        const delta = axisT(dragAxis, startPos) - startT;
+        cube.position.copy(startPos).addScaledVector(dragAxis, delta);
       } else if (mode === 'rotate') {
-        const a = axisAngle(active.dir, startPos);
+        const a = axisAngle(dragAxis, startPos);
         if (Number.isNaN(a)) return;         // grazing the ring edge-on; skip frame
         if (Number.isNaN(prevAngle)) { prevAngle = a; return; }
         let d = a - prevAngle;
@@ -201,12 +209,14 @@ async function main() {
         else if (d < -Math.PI) d += 2 * Math.PI; // turn accumulates smoothly
         accumAngle += d;
         prevAngle = a;
-        const dq = new THREE.Quaternion().setFromAxisAngle(active.dir, accumAngle);
-        cube.quaternion.copy(startQuat).premultiply(dq); // world-space rotation
+        const dq = new THREE.Quaternion().setFromAxisAngle(dragAxis, accumAngle);
+        cube.quaternion.copy(startQuat).premultiply(dq); // rotate about the world-space axis
       } else {
-        // scale: the drag distance along the axis, as a ratio of where it began
+        // scale: drag distance along the axis, as a ratio of where it began.
+        // Scale is inherently local (cube.scale is per local axis), so the
+        // component comes from the untransformed axis.
         if (Math.abs(startT) < 1e-4) return;
-        const factor = axisT(active.dir, startPos) / startT;
+        const factor = axisT(dragAxis, startPos) / startT;
         const axis = active.dir.x ? 'x' : active.dir.y ? 'y' : 'z';
         cube.scale[axis] = Math.max(0.05, startScale[axis] * factor);
       }
@@ -232,6 +242,12 @@ async function main() {
   });
 
   renderer.setAnimationLoop(() => {
+    // Glue every gizmo to the cube: always its position, and in local space its
+    // orientation too (world space keeps them axis-aligned).
+    for (const g of Object.values(GIZMOS)) {
+      g.group.position.copy(cube.position);
+      g.group.quaternion.copy(space === 'local' ? cube.quaternion : IDENTITY_Q);
+    }
     controls.update();
     renderer.render(scene, camera);
   });
