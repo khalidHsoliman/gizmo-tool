@@ -1,20 +1,20 @@
 # Gizmo Tool
 
-A 3D transform gizmo built with a **C++ core compiled to WebAssembly**, rendered in the browser with **Three.js**. The interaction and transform math live in C++; JavaScript handles rendering and input. This mirrors how real web-based 3D and CAD tools are architected — a native-speed core with a thin presentation layer on top.
+A 3D transform gizmo built with a **C++ core compiled to WebAssembly**, rendered in the browser with **Three.js**. The interaction and transform math live in C++; JavaScript handles rendering and input. This mirrors how real web-based 3D and CAD tools are architected - a native-speed core with a thin presentation layer on top.
 
-**[Live demo →](https://YOUR_USERNAME.github.io/gizmo-tool/)**
+**[Live demo →](https://khalidHsoliman.github.io/gizmo-tool/)**
 
 ## Why this architecture
 
-The C++ core has zero dependency on Three.js or the browser. It receives rays and transforms as plain data, does the geometry, and returns a new transform — meaning it could drive any renderer or run in any environment. Three.js unprojects the mouse into a world-space ray and hands it across the WebAssembly boundary; only a handful of floats cross per frame, never scene data.
+The C++ core has zero dependency on Three.js or the browser. It receives rays and transforms as plain data, does the geometry, and returns a new transform - meaning it could drive any renderer or run in any environment. Three.js unprojects the mouse into a world-space ray and hands it across the WebAssembly boundary; only a handful of floats cross per frame, never scene data.
 
 ## Tech stack
 
-- **C++** — interaction logic and transform math
-- **Emscripten** — compiles the C++ to WebAssembly
-- **Three.js** — WebGL rendering, camera, input
-- **Vite** — dev server and production build
-- **GitHub Pages** — hosting
+- **C++** interaction logic and transform math
+- **Emscripten** compiles the C++ to WebAssembly
+- **Three.js** WebGL rendering, camera, input
+- **Vite** dev server and production build
+- **GitHub Pages** hosting
 
 ## Running locally
 
