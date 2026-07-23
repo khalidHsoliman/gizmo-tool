@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Generated WASM artifact — compiled from src/core.cpp via `npm run build:wasm`
+public/core.js
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:wasm": "em++ src/core.cpp -o public/core.js -lembind -sSINGLE_FILE=1 -sMODULARIZE=1 -sEXPORT_ES6=1 -O2",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

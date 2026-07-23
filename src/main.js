@@ -6,7 +6,7 @@ async function loadCore() {
     const createModule = (await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}core.js`)).default;
     return await createModule();
   } catch (err) {
-    console.error('[gizmo] Could not load core.js — did you run the em++ compile?', err);
+    console.error('[gizmo] Could not load core.js — did you run `npm run build:wasm`?', err);
     return null;
   }
 }
@@ -40,17 +40,92 @@ async function main() {
   dir.position.set(5, 10, 7);
   scene.add(dir);
 
+  // --- translate gizmo: one draggable axis (X) ---
+  // A single axis for this milestone; the drag math in C++ is axis-agnostic,
+  // so extending to Y/Z is just more arrows pointing the same call at a
+  // different direction vector.
+  const AXIS = new THREE.Vector3(1, 0, 0);
+  const IDLE_COLOR = 0xff5566;
+  const HOT_COLOR = 0xffd24a;
+
+  const handleMat = new THREE.MeshBasicMaterial({ color: IDLE_COLOR, depthTest: false });
+  const arrow = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 12), handleMat);
+  shaft.position.y = 0.45;
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 16), handleMat);
+  head.position.y = 0.98;
+  arrow.add(shaft, head);
+  // The arrow is modeled along +Y; aim it down the axis.
+  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), AXIS);
+  arrow.renderOrder = 1; // draw on top of the cube
+  scene.add(arrow);
+  arrow.position.copy(cube.position);
+
+  // --- interaction ---
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  const startPos = new THREE.Vector3();
+  let dragging = false;
+  let startT = 0;
+
+  const setPointer = (e) => {
+    pointer.x = (e.clientX / innerWidth) * 2 - 1;
+    pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+  };
+
+  // Feed the current mouse ray and the axis to C++, get back the position
+  // along the axis (world units, measured from the axis origin `ao`).
+  const axisT = (ao) => {
+    const { origin: o, direction: d } = raycaster.ray;
+    return core.axisClosestT(
+      o.x, o.y, o.z,
+      d.x, d.y, d.z,
+      ao.x, ao.y, ao.z,
+      AXIS.x, AXIS.y, AXIS.z
+    );
+  };
+
+  const overHandle = () => raycaster.intersectObject(arrow, true).length > 0;
+
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (!core) return;
+    setPointer(e);
+    if (!overHandle()) return;
+    dragging = true;
+    controls.enabled = false;
+    startPos.copy(cube.position);
+    startT = axisT(startPos); // axis origin stays fixed for the whole drag
+    handleMat.color.set(HOT_COLOR);
+  });
+
+  renderer.domElement.addEventListener('pointermove', (e) => {
+    setPointer(e);
+    if (dragging) {
+      const delta = axisT(startPos) - startT;
+      cube.position.copy(startPos).addScaledVector(AXIS, delta);
+      arrow.position.copy(cube.position);
+    } else if (core) {
+      const hot = overHandle();
+      handleMat.color.set(hot ? HOT_COLOR : IDLE_COLOR);
+      renderer.domElement.style.cursor = hot ? 'grab' : 'auto';
+    }
+  });
+
+  addEventListener('pointerup', () => {
+    if (!dragging) return;
+    dragging = false;
+    controls.enabled = true;
+    handleMat.color.set(IDLE_COLOR);
+  });
+
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
   });
 
-  // --- render loop: C++ computes the spin angle each frame ---
-  const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
-    const t = clock.getElapsedTime();
-    if (core) cube.rotation.y = core.spin(t);
     controls.update();
     renderer.render(scene, camera);
   });
