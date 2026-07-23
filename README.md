@@ -38,7 +38,7 @@ Then open the URL Vite prints (usually `http://localhost:5173`).
 - [x] C++ → WASM → Three.js pipeline, deployed live
 - [x] Draggable translate axis
 - [x] Three-axis translate
-- [ ] Rotate and scale modes _(rotate done; scale next)_
+- [x] Rotate and scale modes
 - [ ] Local / world space toggle
 
 ## License
