@@ -40,32 +40,48 @@ async function main() {
   dir.position.set(5, 10, 7);
   scene.add(dir);
 
-  // --- translate gizmo: one draggable axis (X) ---
-  // A single axis for this milestone; the drag math in C++ is axis-agnostic,
-  // so extending to Y/Z is just more arrows pointing the same call at a
-  // different direction vector.
-  const AXIS = new THREE.Vector3(1, 0, 0);
-  const IDLE_COLOR = 0xff5566;
-  const HOT_COLOR = 0xffd24a;
+  // --- translate gizmo: three draggable axes (X, Y, Z) ---
+  // The drag math in C++ is axis-agnostic, so each axis is the same arrow
+  // pointing the same `axisClosestT` call at a different direction vector.
+  const HOT_COLOR = 0xffd24a; // shared highlight when an axis is hovered/dragged
+  const AXES = [
+    { dir: new THREE.Vector3(1, 0, 0), color: 0xff5566 }, // X — red
+    { dir: new THREE.Vector3(0, 1, 0), color: 0x66dd66 }, // Y — green
+    { dir: new THREE.Vector3(0, 0, 1), color: 0x5588ff }, // Z — blue
+  ];
 
-  const handleMat = new THREE.MeshBasicMaterial({ color: IDLE_COLOR, depthTest: false });
-  const arrow = new THREE.Group();
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 12), handleMat);
-  shaft.position.y = 0.45;
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 16), handleMat);
-  head.position.y = 0.98;
-  arrow.add(shaft, head);
-  // The arrow is modeled along +Y; aim it down the axis.
-  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), AXIS);
-  arrow.renderOrder = 1; // draw on top of the cube
-  scene.add(arrow);
-  arrow.position.copy(cube.position);
+  // Geometry is identical for every arrow, so build it once and share it.
+  const shaftGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.9, 12);
+  const headGeo = new THREE.ConeGeometry(0.06, 0.18, 16);
+  const UP = new THREE.Vector3(0, 1, 0); // arrows are modeled along +Y
+
+  const gizmo = new THREE.Group();
+  scene.add(gizmo);
+  const handles = []; // pickable meshes, each tagged with its axis descriptor
+
+  for (const ax of AXES) {
+    ax.mat = new THREE.MeshBasicMaterial({ color: ax.color, depthTest: false });
+    const arrow = new THREE.Group();
+    const shaft = new THREE.Mesh(shaftGeo, ax.mat);
+    shaft.position.y = 0.45;
+    const head = new THREE.Mesh(headGeo, ax.mat);
+    head.position.y = 0.98;
+    arrow.add(shaft, head);
+    arrow.quaternion.setFromUnitVectors(UP, ax.dir); // aim +Y down this axis
+    arrow.renderOrder = 1; // draw on top of the cube
+    // Tag both meshes so a raycast hit tells us which axis was grabbed.
+    shaft.userData.axis = ax;
+    head.userData.axis = ax;
+    handles.push(shaft, head);
+    gizmo.add(arrow);
+  }
+  gizmo.position.copy(cube.position);
 
   // --- interaction ---
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const startPos = new THREE.Vector3();
-  let dragging = false;
+  let active = null; // the axis descriptor currently being dragged
   let startT = 0;
 
   const setPointer = (e) => {
@@ -74,49 +90,57 @@ async function main() {
     raycaster.setFromCamera(pointer, camera);
   };
 
-  // Feed the current mouse ray and the axis to C++, get back the position
-  // along the axis (world units, measured from the axis origin `ao`).
-  const axisT = (ao) => {
+  // Feed the current mouse ray and a specific axis to C++, get back the
+  // position along that axis (world units, measured from the origin `ao`).
+  const axisT = (dir, ao) => {
     const { origin: o, direction: d } = raycaster.ray;
     return core.axisClosestT(
       o.x, o.y, o.z,
       d.x, d.y, d.z,
       ao.x, ao.y, ao.z,
-      AXIS.x, AXIS.y, AXIS.z
+      dir.x, dir.y, dir.z
     );
   };
 
-  const overHandle = () => raycaster.intersectObject(arrow, true).length > 0;
+  // Which axis, if any, is under the cursor? Returns its descriptor or null.
+  const pickAxis = () => {
+    const hit = raycaster.intersectObjects(handles, false)[0];
+    return hit ? hit.object.userData.axis : null;
+  };
+
+  const paintIdle = () => AXES.forEach((a) => a.mat.color.set(a.color));
 
   renderer.domElement.addEventListener('pointerdown', (e) => {
     if (!core) return;
     setPointer(e);
-    if (!overHandle()) return;
-    dragging = true;
+    const ax = pickAxis();
+    if (!ax) return;
+    active = ax;
     controls.enabled = false;
     startPos.copy(cube.position);
-    startT = axisT(startPos); // axis origin stays fixed for the whole drag
-    handleMat.color.set(HOT_COLOR);
+    startT = axisT(active.dir, startPos); // axis origin fixed for the whole drag
+    ax.mat.color.set(HOT_COLOR);
   });
 
   renderer.domElement.addEventListener('pointermove', (e) => {
     setPointer(e);
-    if (dragging) {
-      const delta = axisT(startPos) - startT;
-      cube.position.copy(startPos).addScaledVector(AXIS, delta);
-      arrow.position.copy(cube.position);
+    if (active) {
+      const delta = axisT(active.dir, startPos) - startT;
+      cube.position.copy(startPos).addScaledVector(active.dir, delta);
+      gizmo.position.copy(cube.position);
     } else if (core) {
-      const hot = overHandle();
-      handleMat.color.set(hot ? HOT_COLOR : IDLE_COLOR);
-      renderer.domElement.style.cursor = hot ? 'grab' : 'auto';
+      const ax = pickAxis();
+      paintIdle();
+      if (ax) ax.mat.color.set(HOT_COLOR);
+      renderer.domElement.style.cursor = ax ? 'grab' : 'auto';
     }
   });
 
   addEventListener('pointerup', () => {
-    if (!dragging) return;
-    dragging = false;
+    if (!active) return;
+    active = null;
     controls.enabled = true;
-    handleMat.color.set(IDLE_COLOR);
+    paintIdle();
   });
 
   addEventListener('resize', () => {
