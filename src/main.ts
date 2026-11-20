@@ -1,19 +1,26 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as core from './core.ts';
 
-async function loadCore() {
-  try {
-    const createModule = (await import(/* @vite-ignore */ `${import.meta.env.BASE_URL}core.js`)).default;
-    return await createModule();
-  } catch (err) {
-    console.error('[gizmo] Could not load core.js — did you run `npm run build:wasm`?', err);
-    return null;
-  }
+type Mode = 'translate' | 'rotate' | 'scale';
+type Space = 'world' | 'local';
+
+// What a raycast hit on a handle tells us: which axis, and how to recolor it.
+interface Handle {
+  dir: THREE.Vector3;
+  mat: THREE.MeshBasicMaterial;
+  color: number;
 }
 
-async function main() {
-  const core = await loadCore();
+interface Gizmo {
+  group: THREE.Group;
+  handles: THREE.Mesh[];
+}
 
+// Per-axis mesh factory; `up` is the direction the meshes are modeled along.
+type MeshFactory = ((mat: THREE.MeshBasicMaterial) => THREE.Mesh[]) & { up?: THREE.Vector3 };
+
+function main() {
   // --- scene ---
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x14141a);
@@ -54,10 +61,12 @@ async function main() {
   const UP = new THREE.Vector3(0, 1, 0);  // arrows/stems are modeled along +Y
   const FWD = new THREE.Vector3(0, 0, 1); // a torus's normal is +Z by default
 
-  const tagHandle = (mesh, dir, mat, color) => {
-    mesh.userData.h = { dir, mat, color };
+  const tagHandle = (mesh: THREE.Mesh, dir: THREE.Vector3, mat: THREE.MeshBasicMaterial, color: number) => {
+    const h: Handle = { dir, mat, color };
+    mesh.userData.h = h;
     mesh.renderOrder = 1; // draw on top of the cube
   };
+  const handleOf = (obj: THREE.Object3D) => obj.userData.h as Handle;
 
   // Shared geometry — one copy each, reused across all three axes.
   const shaftGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.9, 12);
@@ -66,9 +75,9 @@ async function main() {
   const nubGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
 
   // Build one gizmo group from a per-axis mesh factory.
-  const buildGizmo = (makeMeshes) => {
+  const buildGizmo = (makeMeshes: MeshFactory): Gizmo => {
     const group = new THREE.Group();
-    const handles = [];
+    const handles: THREE.Mesh[] = [];
     for (const ax of AXES) {
       const mat = new THREE.MeshBasicMaterial({ color: ax.color, depthTest: false });
       const holder = new THREE.Group();
@@ -92,7 +101,7 @@ async function main() {
 
   // Rotate: a ring in the plane perpendicular to the axis. The torus normal is
   // +Z, so this factory orients from FWD instead of UP.
-  const rotate = buildGizmo(Object.assign((mat) => [new THREE.Mesh(ringGeo, mat)], { up: FWD }));
+  const rotate = buildGizmo(Object.assign((mat: THREE.MeshBasicMaterial) => [new THREE.Mesh(ringGeo, mat)], { up: FWD }));
 
   // Scale: a stem capped with a small box (distinct from the translate cone).
   const scale = buildGizmo((mat) => {
@@ -101,7 +110,7 @@ async function main() {
     return [stem, nub];
   });
 
-  const GIZMOS = { translate, rotate, scale };
+  const GIZMOS: Record<Mode, Gizmo> = { translate, rotate, scale };
   scene.add(translate.group, rotate.group, scale.group);
 
   // --- mode + space state ---
@@ -112,9 +121,9 @@ async function main() {
     'user-select:none;pointer-events:none';
   document.body.appendChild(hint);
 
-  const MODE_KEYS = { w: 'translate', e: 'rotate', r: 'scale' };
-  let mode = 'translate';
-  let space = 'world'; // 'world' = axis-aligned; 'local' = follows the cube
+  const MODE_KEYS: Record<string, Mode | undefined> = { w: 'translate', e: 'rotate', r: 'scale' };
+  let mode: Mode = 'translate';
+  let space: Space = 'world'; // 'world' = axis-aligned; 'local' = follows the cube
 
   const refreshUI = () => {
     for (const [name, g] of Object.entries(GIZMOS)) g.group.visible = name === mode;
@@ -125,7 +134,8 @@ async function main() {
 
   addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
-    if (MODE_KEYS[k]) { mode = MODE_KEYS[k]; refreshUI(); }
+    const next = MODE_KEYS[k];
+    if (next) { mode = next; refreshUI(); }
     else if (k === 'q') { space = space === 'world' ? 'local' : 'world'; refreshUI(); }
   });
 
@@ -137,39 +147,38 @@ async function main() {
   const startQuat = new THREE.Quaternion();
   const startScale = new THREE.Vector3();
   const dragAxis = new THREE.Vector3(); // grabbed axis, in world space, fixed for the drag
-  let active = null;   // the grabbed handle's { dir, mat, color }, or null
+  let active: Handle | null = null; // the grabbed handle's { dir, mat, color }, or null
   let startT = 0;      // translate/scale: axis position at drag start
   let prevAngle = 0;   // rotate: last frame's angle (for wrap-safe deltas)
   let accumAngle = 0;  // rotate: total angle turned this drag
 
-  const setPointer = (e) => {
+  const setPointer = (e: PointerEvent) => {
     pointer.x = (e.clientX / innerWidth) * 2 - 1;
     pointer.y = -(e.clientY / innerHeight) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
   };
 
-  const pick = () => {
+  const pick = (): Handle | null => {
     const hit = raycaster.intersectObjects(GIZMOS[mode].handles, false)[0];
-    return hit ? hit.object.userData.h : null;
+    return hit ? handleOf(hit.object) : null;
   };
 
   const paintIdle = () => {
     for (const g of Object.values(GIZMOS)) {
-      for (const m of g.handles) m.userData.h.mat.color.set(m.userData.h.color);
+      for (const m of g.handles) handleOf(m).mat.color.set(handleOf(m).color);
     }
   };
 
-  // C++ bridge — a specific axis + the current mouse ray, both are 12 floats in.
+  // Core bridge — a specific axis + the current mouse ray, both are 12 numbers in.
   const ray = () => raycaster.ray;
-  const call = (fn, d, o) =>
-    core[fn](ray().origin.x, ray().origin.y, ray().origin.z,
+  const call = (fn: typeof core.axisClosestT, d: THREE.Vector3, o: THREE.Vector3) =>
+    fn(ray().origin.x, ray().origin.y, ray().origin.z,
       ray().direction.x, ray().direction.y, ray().direction.z,
       o.x, o.y, o.z, d.x, d.y, d.z);
-  const axisT = (d, o) => call('axisClosestT', d, o);
-  const axisAngle = (d, o) => call('axisAngle', d, o);
+  const axisT = (d: THREE.Vector3, o: THREE.Vector3) => call(core.axisClosestT, d, o);
+  const axisAngle = (d: THREE.Vector3, o: THREE.Vector3) => call(core.axisAngle, d, o);
 
   renderer.domElement.addEventListener('pointerdown', (e) => {
-    if (!core) return;
     setPointer(e);
     const h = pick();
     if (!h) return;
@@ -177,7 +186,7 @@ async function main() {
     controls.enabled = false;
     startPos.copy(cube.position); // axis origin stays fixed for the whole drag
 
-    // The C++ math is world-space. In local mode, rotate the grabbed axis by the
+    // The core math is world-space. In local mode, rotate the grabbed axis by the
     // cube's current orientation to get its world direction; freeze it for the drag.
     dragAxis.copy(active.dir);
     if (space === 'local') dragAxis.applyQuaternion(cube.quaternion);
@@ -220,7 +229,7 @@ async function main() {
         const axis = active.dir.x ? 'x' : active.dir.y ? 'y' : 'z';
         cube.scale[axis] = Math.max(0.05, startScale[axis] * factor);
       }
-    } else if (core) {
+    } else {
       const h = pick();
       paintIdle();
       if (h) h.mat.color.set(HOT_COLOR);
