@@ -6,12 +6,17 @@
   "scripts": {
     "build:wasm": "em++ src/core.cpp -o public/core.js -lembind -sSINGLE_FILE=1 -sMODULARIZE=1 -sEXPORT_ES6=1 -O2",
     "dev": "vite",
-    "build": "vite build",
+    "typecheck": "tsc",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
+    "test": "node --test \"src/**/*.test.ts\"",
     "deploy": "gh-pages -d dist"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/three": "^0.185.4",
     "gh-pages": "^6.3.0",
+    "typescript": "^7.0.2",
     "vite": "^8.1.1"
   },
   "dependencies": {
